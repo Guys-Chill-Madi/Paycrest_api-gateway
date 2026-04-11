@@ -2,7 +2,7 @@ name: CI-CD Pipeline
  
 on:
   push:
-    branches: [ develop, master ]
+    branches: [ develop, main ]
   pull_request:
     branches: [ master ]
   workflow_dispatch:
