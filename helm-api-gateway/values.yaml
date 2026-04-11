@@ -1,0 +1,26 @@
+namespace: pycrest
+
+image:
+  repository: chillmadiguys/api-gateway
+  tag: v1.1.1
+  pullPolicy: Always
+
+replicaCount: 2
+minReadySeconds: 10
+
+service:
+  port: 3000
+
+resources:
+  requests:
+    cpu: 100m
+    memory: 128Mi
+  limits:
+    cpu: 500m
+    memory: 512Mi
+
+serviceAccount:
+  name: api-gateway-sa
+
+configMapName: pycrest-global-config
+secretName: pycrest-global-secret
