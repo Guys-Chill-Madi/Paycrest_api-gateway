@@ -4,7 +4,8 @@ on:
   push:
     branches: [ "test" ]
   pull_request:
-    branches: [ "main" ] 
+    branches: [ "main" ]
+    types: [opened, synchronize, reopened]
   workflow_dispatch:
     inputs:
       release_tag:
@@ -18,10 +19,9 @@ concurrency:
 jobs:
   security-and-validation:
     name: Security Scan Pipeline
-
     if: |
       (github.event_name == 'push' && github.ref_name == 'test') ||
-      (github.event_name == 'pull_request')
+      (github.event_name == 'pull_request' && github.event.pull_request.head.ref != 'test')
     runs-on: ubuntu-latest
     steps:
       - name: Checkout Code
@@ -65,7 +65,7 @@ jobs:
 
   release-to-production:
     name: Build and Push to Docker Hub
-    if: github.event_name == 'workflow_dispatch'
+    if: github.event_name == 'workflow_dispatch' && github.ref_name == 'main'
     runs-on: ubuntu-latest
     steps:
       - name: Checkout Code
@@ -76,7 +76,7 @@ jobs:
         run: |
           RAW_TAG="${{ github.event.inputs.release_tag }}"
           if [[ ! $RAW_TAG =~ ^v[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
-            echo "::error::Tag must be vMAJOR.MINOR.PATCH"
+            echo "::error::Invalid Tag Format. Please use v1.0.0"
             exit 1
           fi
           echo "FINAL_TAG=$RAW_TAG" >> $GITHUB_ENV
@@ -118,24 +118,42 @@ jobs:
           server_port: 465
           username: ${{ secrets.MAIL_USERNAME }}
           password: ${{ secrets.MAIL_PASSWORD }}
-          subject: "Pipeline Report: ${{ github.repository }} [${{ (needs.security-and-validation.result == 'failure' || needs.release-to-production.result == 'failure') && 'FAILED' || 'SUCCESS' }}]"
+          subject: "🚀 Paycrest CI/CD: ${{ github.repository }} | Status: ${{ (needs.security-and-validation.result == 'failure' || needs.release-to-production.result == 'failure') && 'FAILED' || 'SUCCESS' }}"
           to: ${{ secrets.DEVELOPMENT_TEAM_EMAIL }}
-          from: GitHub Actions Robot
-          body: |
-            ### Paycrest Pipeline Execution Report ###
-            
-            SUMMARY:
-            --------------------------------------------
-            Status: ${{ (needs.security-and-validation.result == 'failure' || needs.release-to-production.result == 'failure') && '❌ FAILURE' || '✅ SUCCESS' }}
-            Event: ${{ github.event_name }}
-            Initiated By: ${{ github.actor }}
-            Branch: ${{ github.ref_name }}
-            
-            JOB STATUS:
-            --------------------------------------------
-            - Security/Snyk/Trivy: ${{ needs.security-and-validation.result || 'SKIPPED' }}
-            - Docker Release: ${{ needs.release-to-production.result || 'SKIPPED' }}
-            
-            LINKS:
-            --------------------------------------------
-            Logs: https://github.com/${{ github.repository }}/actions/runs/${{ github.run_id }}
+          from: "Paycrest Automation <${{ secrets.MAIL_USERNAME }}>"
+          html_body: |
+            <div style="font-family: Arial, sans-serif; max-width: 600px; border: 1px solid #e0e0e0; border-radius: 8px; padding: 20px;">
+              <h2 style="color: #2c3e50; border-bottom: 2px solid #3498db; padding-bottom: 10px;">Pipeline Execution Report</h2>
+              
+              <table style="width: 100%; margin-top: 20px;">
+                <tr>
+                  <td><strong>Status:</strong></td>
+                  <td>
+                    <span style="padding: 4px 8px; border-radius: 4px; color: white; background-color: ${{ (needs.security-and-validation.result == 'failure' || needs.release-to-production.result == 'failure') && '#e74c3c' || '#27ae60' }};">
+                      ${{ (needs.security-and-validation.result == 'failure' || needs.release-to-production.result == 'failure') && 'FAILED' || 'SUCCESS' }}
+                    </span>
+                  </td>
+                </tr>
+                <tr><td><strong>Repository:</strong></td><td>${{ github.repository }}</td></tr>
+                <tr><td><strong>Triggered By:</strong></td><td>${{ github.actor }}</td></tr>
+                <tr><td><strong>Event:</strong></td><td>${{ github.event_name }}</td></tr>
+                <tr><td><strong>Branch:</strong></td><td>`${{ github.ref_name }}`</td></tr>
+              </table>
+
+              <h3 style="color: #2c3e50; margin-top: 25px;">Job Breakdown</h3>
+              <ul style="list-style-type: none; padding-left: 0;">
+                <li style="padding: 8px; background: #f9f9f9; margin-bottom: 5px;">🛡️ <strong>Security Scan:</strong> ${{ needs.security-and-validation.result || 'SKIPPED' }}</li>
+                <li style="padding: 8px; background: #f9f9f9; margin-bottom: 5px;">🐳 <strong>Production Release:</strong> ${{ needs.release-to-production.result || 'SKIPPED' }}</li>
+              </ul>
+
+              <div style="margin-top: 30px; text-align: center;">
+                <a href="https://github.com/${{ github.repository }}/actions/runs/${{ github.run_id }}" 
+                   style="background-color: #3498db; color: white; padding: 10px 20px; text-decoration: none; border-radius: 5px; font-weight: bold;">
+                   View Full Logs in GitHub
+                </a>
+              </div>
+              
+              <p style="font-size: 12px; color: #7f8c8d; margin-top: 30px; border-top: 1px solid #eee; padding-top: 10px;">
+                This is an automated message from the Paycrest CI/CD system. Please do not reply.
+              </p>
+            </div>
