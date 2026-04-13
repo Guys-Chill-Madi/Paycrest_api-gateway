@@ -2,13 +2,13 @@ name: Paycrest API Gateway CI/CD
 
 on:
   push:
-    branches: [ "test" ]
+    branches: [ "test", "main" ]
   pull_request:
     branches: [ "main" ]
   workflow_dispatch:
     inputs:
       release_tag:
-        description: 'MANDATORY: Enter version (e.g., 1.2.3)'
+        description: 'MANDATORY: Enter version (e.g., v1.2.3)'
         required: true
 
 jobs:
@@ -21,7 +21,7 @@ jobs:
         with:
           fetch-depth: 0
 
-      # 1. SonarQube Scan
+
       - name: SonarQube Scan
         uses: sonarsource/sonarqube-scan-action@v2
         env:
@@ -36,7 +36,7 @@ jobs:
         with:
           scanMetadataReportFile: .scannerwork/report-task.txt
 
-      # 2. Snyk Scan
+
       - name: Snyk Security Scan
         uses: snyk/actions/node@master
         env:
@@ -45,7 +45,7 @@ jobs:
           args: --severity-threshold=high
           command: monitor
 
-      # 3. Build & Trivy Scan
+
       - name: Build Local Image for Scanning
         run: docker build -t local-test-image:${{ github.sha }} .
 
@@ -60,29 +60,27 @@ jobs:
 
   release-to-production:
     name: Build and Push to Docker Hub
-    # Runs on PR to main or manual dispatch
-    if: github.event_name == 'pull_request' || github.event_name == 'workflow_dispatch'
+    if: github.event_name == 'workflow_dispatch'
     needs: security-and-validation
     runs-on: ubuntu-latest
     steps:
       - name: Checkout Code
         uses: actions/checkout@v4
 
-      # Strict Semantic Versioning Validation
+
       - name: Validate Version Tag
         id: tag_check
         run: |
           RAW_TAG="${{ github.event.inputs.release_tag }}"
           
-          # Force fail if empty
           if [ -z "$RAW_TAG" ]; then
-            echo "ERROR: No tag provided. You must provide a tag via 'Run workflow' to release."
+            echo "ERROR: No tag provided."
             exit 1
           fi
 
-          # Regex: Strictly MAJOR.MINOR.PATCH (e.g., 1.2.3)
-          if [[ ! $RAW_TAG =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
-            echo "ERROR: '$RAW_TAG' is invalid. Tag must be exactly MAJOR.MINOR.PATCH."
+          # Regex: Strictly vMAJOR.MINOR.PATCH (e.g., v1.2.3)
+          if [[ ! $RAW_TAG =~ ^v[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+            echo "ERROR: '$RAW_TAG' is invalid. Tag must be vMAJOR.MINOR.PATCH (e.g. v1.0.0)."
             exit 1
           fi
           
