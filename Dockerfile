@@ -1,10 +1,10 @@
-FROM node:20-alpine AS deps
+FROM node:20-alpine3.21 AS deps
 WORKDIR /app
 COPY package*.json ./
 RUN npm ci --omit=dev --frozen-lockfile
 
 
-FROM node:20-alpine AS runtime
+FROM node:20-alpine3.21 AS runtime
 WORKDIR /app
 
 # Alpine specific user creation
