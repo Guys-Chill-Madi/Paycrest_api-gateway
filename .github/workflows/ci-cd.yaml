@@ -11,7 +11,7 @@ on:
         description: 'MANDATORY: Enter version (e.g., v1.2.3)'
         required: true
 
-# Prevents multiple security scans from running on the same PR/Branch simultaneously
+
 concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}
   cancel-in-progress: true
@@ -19,8 +19,7 @@ concurrency:
 jobs:
   security-and-validation:
     name: Security Scan Pipeline
-    # Logic: Run on push to test OR on Pull Request. 
-    # NEVER run on push to main (which happens after merge).
+
     if: |
       (github.event_name == 'push' && github.ref_name == 'test') ||
       (github.event_name == 'pull_request')
@@ -67,7 +66,6 @@ jobs:
 
   release-to-production:
     name: Build and Push to Docker Hub
-    # Logic: Strictly manual. No triggers from push/PR.
     if: github.event_name == 'workflow_dispatch'
     runs-on: ubuntu-latest
     steps:
