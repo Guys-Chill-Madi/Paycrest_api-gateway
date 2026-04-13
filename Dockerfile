@@ -1,15 +1,14 @@
 FROM node:20-alpine3.21 AS deps
+RUN apk update && apk upgrade --no-cache
 WORKDIR /app
 COPY package*.json ./
 RUN npm ci --omit=dev --frozen-lockfile
 
 
 FROM node:20-alpine3.21 AS runtime
+RUN apk update && apk upgrade --no-cache
 WORKDIR /app
-
-# Alpine specific user creation
 RUN addgroup -S appgroup && adduser -S appuser -G appgroup
-
 COPY --from=deps /app/node_modules ./node_modules
 COPY --chown=appuser:appgroup . .
 USER appuser
