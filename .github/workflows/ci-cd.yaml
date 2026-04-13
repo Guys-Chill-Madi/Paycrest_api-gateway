@@ -2,7 +2,7 @@ name: Paycrest API Gateway CI/CD
 
 on:
   push:
-    branches: [ "test" ]
+    branches: [ "test", "main" ]
   pull_request:
     branches: [ "main" ] # This triggers the security scan for the merge check
   workflow_dispatch:
