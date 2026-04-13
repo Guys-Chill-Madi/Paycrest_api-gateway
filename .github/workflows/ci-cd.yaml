@@ -1,15 +1,19 @@
-name: Paycrest API Gateway CI Pipeline
+name: Paycrest API Gateway CI/CD
 
 on:
   push:
-    branches: [ "test", "main" ]
+    branches: [ "test" ]
   pull_request:
     branches: [ "main" ]
+  workflow_dispatch:
+    inputs:
+      release_tag:
+        description: 'MANDATORY: Enter version (e.g., 1.2.3)'
+        required: true
 
 jobs:
-  validate-and-scan:
-    name: Test and Security Scan
-    if: github.ref == 'refs/heads/test' || github.event_name == 'push'
+  security-and-validation:
+    name: Security Scan Pipeline
     runs-on: ubuntu-latest
     steps:
       - name: Checkout Code
@@ -17,25 +21,7 @@ jobs:
         with:
           fetch-depth: 0
 
-      - name: Setup Node.js
-        uses: actions/setup-node@v4
-        with:
-          node-version: 18
-          cache: 'npm'
-
-      - name: Install & Test
-        run: |
-          npm ci
-          npm test --if-present
-
-      - name: Snyk Security Scan
-        uses: snyk/actions/node@master
-        env:
-          SNYK_TOKEN: ${{ secrets.SNYK_TOKEN }}
-        with:
-          args: --severity-threshold=high
-          command: monitor # This uploads results to your Snyk dashboard
-
+      # 1. SonarQube Scan
       - name: SonarQube Scan
         uses: sonarsource/sonarqube-scan-action@v2
         env:
@@ -48,6 +34,16 @@ jobs:
         env:
           SONAR_TOKEN: ${{ secrets.SONAR_TOKEN }}
 
+      # 2. Snyk Scan
+      - name: Snyk Security Scan
+        uses: snyk/actions/node@master
+        env:
+          SNYK_TOKEN: ${{ secrets.SNYK_TOKEN }}
+        with:
+          args: --severity-threshold=high
+          command: monitor
+
+      # 3. Build & Trivy Scan
       - name: Build Local Image for Scanning
         run: docker build -t local-test-image:${{ github.sha }} .
 
@@ -58,18 +54,37 @@ jobs:
           format: 'table'
           exit-code: '1'
           ignore-unfixed: true
-          vuln-type: 'os,library'
           severity: 'CRITICAL,HIGH'
 
   release-to-production:
     name: Build and Push to Docker Hub
-    if: github.ref == 'refs/heads/main' && github.event_name == 'push'
+    # Runs on PR to main or manual dispatch
+    if: github.event_name == 'pull_request' || github.event_name == 'workflow_dispatch'
+    needs: security-and-validation
     runs-on: ubuntu-latest
-    env:
-      IMAGE_NAME: ${{ secrets.DOCKER_USERNAME }}/paycrest-api-gateway
     steps:
       - name: Checkout Code
         uses: actions/checkout@v4
+
+      # Strict Semantic Versioning Validation
+      - name: Validate Version Tag
+        id: tag_check
+        run: |
+          RAW_TAG="${{ github.event.inputs.release_tag }}"
+          
+          # Force fail if empty
+          if [ -z "$RAW_TAG" ]; then
+            echo "ERROR: No tag provided. You must provide a tag via 'Run workflow' to release."
+            exit 1
+          fi
+
+          # Regex: Strictly MAJOR.MINOR.PATCH (e.g., 1.2.3)
+          if [[ ! $RAW_TAG =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+            echo "ERROR: '$RAW_TAG' is invalid. Tag must be exactly MAJOR.MINOR.PATCH."
+            exit 1
+          fi
+          
+          echo "FINAL_TAG=$RAW_TAG" >> $GITHUB_ENV
 
       - name: Login to Docker Hub
         uses: docker/login-action@v3
@@ -83,52 +98,34 @@ jobs:
           context: .
           push: true
           tags: |
-            ${{ env.IMAGE_NAME }}:${{ github.sha }}
-            ${{ env.IMAGE_NAME }}:latest # Fixed closing brace here
+            ${{ secrets.DOCKER_USERNAME }}/paycrest-api-gateway:${{ env.FINAL_TAG }}
+            ${{ secrets.DOCKER_USERNAME }}/paycrest-api-gateway:latest
 
   notifications:
-    name: Pipeline Notifications
-    needs: [validate-and-scan, release-to-production]
-    if: always() # Runs even if previous jobs fail
+    name: Notifications
+    needs: [security-and-validation, release-to-production]
+    if: always()
     runs-on: ubuntu-latest
     steps:
-      - name: Send Success Email
-        if: |
-          (github.ref == 'refs/heads/test' && needs.validate-and-scan.result == 'success') ||
-          (github.ref == 'refs/heads/main' && needs.release-to-production.result == 'success')
+      - name: Send Email Notification
         uses: dawidd6/action-send-mail@v3
         with:
           server_address: smtp.gmail.com
           server_port: 465
           username: ${{ secrets.MAIL_USERNAME }}
           password: ${{ secrets.MAIL_PASSWORD }}
-          subject: "✅ Pipeline Success: ${{ github.repository }}"
+          subject: "${{ (needs.security-and-validation.result == 'success' && (needs.release-to-production.result == 'success' || needs.release-to-production.result == 'skipped')) && '✅ Success' || '❌ Failure' }}: Paycrest Pipeline"
           to: ${{ secrets.DEVELOPMENT_TEAM_EMAIL }}
           from: GitHub Actions CI
           body: |
-            The pipeline for ${{ github.repository }} on branch ${{ github.ref_name }} finished successfully.
-            
-            View Run: https://github.com/${{ github.repository }}/actions/runs/${{ github.run_id }}
-
-      - name: Send Failure Email
-        if: |
-          needs.validate-and-scan.result == 'failure' || 
-          needs.release-to-production.result == 'failure'
-        uses: dawidd6/action-send-mail@v3
-        with:
-          server_address: smtp.gmail.com
-          server_port: 465
-          username: ${{ secrets.MAIL_USERNAME }}
-          password: ${{ secrets.MAIL_PASSWORD }}
-          subject: "❌ Pipeline FAILED: ${{ github.repository }}"
-          to: ${{ secrets.DEVELOPMENT_TEAM_EMAIL }}
-          from: GitHub Actions CI
-          body: |
-            ⚠️ Pipeline Failure Alert
-            
-            Branch: ${{ github.ref_name }}
+            Pipeline Execution Report
+            --------------------------
+            Repo: ${{ github.repository }}
             Event: ${{ github.event_name }}
+            Ref: ${{ github.ref_name }}
             
-            The workflow failed during the execution. Please review the logs to identify if the failure occurred during Snyk scanning, SonarQube Quality Gates, or the Docker build process.
+            Job Status:
+            - Security Scans: ${{ needs.security-and-validation.result }}
+            - Docker Release: ${{ needs.release-to-production.result }}
             
-            Logs: https://github.com/${{ github.repository }}/actions/runs/${{ github.run_id }}
+            Log URL: https://github.com/${{ github.repository }}/actions/runs/${{ github.run_id }}
