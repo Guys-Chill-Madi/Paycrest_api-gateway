@@ -4,7 +4,7 @@ on:
   push:
     branches: [ "test", "main" ]
   pull_request:
-    branches: [ "main" ]
+    branches: [ "main" ] # This triggers the security scan for the merge check
   workflow_dispatch:
     inputs:
       release_tag:
@@ -21,7 +21,6 @@ jobs:
         with:
           fetch-depth: 0
 
-
       - name: SonarQube Scan
         uses: sonarsource/sonarqube-scan-action@v2
         env:
@@ -36,7 +35,6 @@ jobs:
         with:
           scanMetadataReportFile: .scannerwork/report-task.txt
 
-
       - name: Snyk Security Scan
         uses: snyk/actions/node@master
         env:
@@ -45,14 +43,13 @@ jobs:
           args: --severity-threshold=high
           command: monitor
 
-
       - name: Build Local Image for Scanning
-        run: docker build -t local-test-image:${{ github.sha }} .
+        run: docker build -t local-scan:${{ github.sha }} .
 
       - name: Trivy FS Scan
         uses: aquasecurity/trivy-action@master
         with:
-          image-ref: 'local-test-image:${{ github.sha }}'
+          image-ref: 'local-scan:${{ github.sha }}'
           format: 'table'
           exit-code: '1'
           ignore-unfixed: true
@@ -60,6 +57,7 @@ jobs:
 
   release-to-production:
     name: Build and Push to Docker Hub
+    # STRICT RULE: This job ONLY runs on manual trigger
     if: github.event_name == 'workflow_dispatch'
     needs: security-and-validation
     runs-on: ubuntu-latest
@@ -67,23 +65,14 @@ jobs:
       - name: Checkout Code
         uses: actions/checkout@v4
 
-
       - name: Validate Version Tag
         id: tag_check
         run: |
           RAW_TAG="${{ github.event.inputs.release_tag }}"
-          
-          if [ -z "$RAW_TAG" ]; then
-            echo "ERROR: No tag provided."
-            exit 1
-          fi
-
-          # Regex: Strictly vMAJOR.MINOR.PATCH (e.g., v1.2.3)
           if [[ ! $RAW_TAG =~ ^v[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
-            echo "ERROR: '$RAW_TAG' is invalid. Tag must be vMAJOR.MINOR.PATCH (e.g. v1.0.0)."
+            echo "ERROR: Tag must be vMAJOR.MINOR.PATCH (e.g., v1.0.1)"
             exit 1
           fi
-          
           echo "FINAL_TAG=$RAW_TAG" >> $GITHUB_ENV
 
       - name: Login to Docker Hub
@@ -114,18 +103,12 @@ jobs:
           server_port: 465
           username: ${{ secrets.MAIL_USERNAME }}
           password: ${{ secrets.MAIL_PASSWORD }}
-          subject: "${{ (needs.security-and-validation.result == 'success' && (needs.release-to-production.result == 'success' || needs.release-to-production.result == 'skipped')) && '✅ Success' || '❌ Failure' }}: Paycrest Pipeline"
+          subject: "Pipeline Report: ${{ github.repository }}"
           to: ${{ secrets.DEVELOPMENT_TEAM_EMAIL }}
           from: GitHub Actions CI
           body: |
             Pipeline Execution Report
             --------------------------
-            Repo: ${{ github.repository }}
             Event: ${{ github.event_name }}
-            Ref: ${{ github.ref_name }}
-            
-            Job Status:
-            - Security Scans: ${{ needs.security-and-validation.result }}
-            - Docker Release: ${{ needs.release-to-production.result }}
-            
-            Log URL: https://github.com/${{ github.repository }}/actions/runs/${{ github.run_id }}
+            Security Scan: ${{ needs.security-and-validation.result }}
+            Docker Release: ${{ needs.release-to-production.result }}
