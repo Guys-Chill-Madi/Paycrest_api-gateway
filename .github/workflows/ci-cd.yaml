@@ -1,0 +1,134 @@
+name: Paycrest API Gateway CI Pipeline
+
+on:
+  push:
+    branches: [ "test", "main" ]
+  pull_request:
+    branches: [ "main" ]
+
+jobs:
+  validate-and-scan:
+    name: Test and Security Scan
+    if: github.ref == 'refs/heads/test' || github.event_name == 'push'
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout Code
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 18
+          cache: 'npm'
+
+      - name: Install & Test
+        run: |
+          npm ci
+          npm test --if-present
+
+      - name: Snyk Security Scan
+        uses: snyk/actions/node@master
+        env:
+          SNYK_TOKEN: ${{ secrets.SNYK_TOKEN }}
+        with:
+          args: --severity-threshold=high
+          command: monitor # This uploads results to your Snyk dashboard
+
+      - name: SonarQube Scan
+        uses: sonarsource/sonarqube-scan-action@v2
+        env:
+          SONAR_TOKEN: ${{ secrets.SONAR_TOKEN }}
+          SONAR_HOST_URL: ${{ secrets.SONAR_HOST_URL }}
+
+      - name: SonarQube Quality Gate
+        uses: sonarsource/sonarqube-quality-gate-action@v1
+        timeout-minutes: 5
+        env:
+          SONAR_TOKEN: ${{ secrets.SONAR_TOKEN }}
+
+      - name: Build Local Image for Scanning
+        run: docker build -t local-test-image:${{ github.sha }} .
+
+      - name: Trivy FS Scan
+        uses: aquasecurity/trivy-action@master
+        with:
+          image-ref: 'local-test-image:${{ github.sha }}'
+          format: 'table'
+          exit-code: '1'
+          ignore-unfixed: true
+          vuln-type: 'os,library'
+          severity: 'CRITICAL,HIGH'
+
+  release-to-production:
+    name: Build and Push to Docker Hub
+    if: github.ref == 'refs/heads/main' && github.event_name == 'push'
+    runs-on: ubuntu-latest
+    env:
+      IMAGE_NAME: ${{ secrets.DOCKER_USERNAME }}/paycrest-api-gateway
+    steps:
+      - name: Checkout Code
+        uses: actions/checkout@v4
+
+      - name: Login to Docker Hub
+        uses: docker/login-action@v3
+        with:
+          username: ${{ secrets.DOCKER_USERNAME }}
+          password: ${{ secrets.DOCKER_PASSWORD }}
+
+      - name: Build and Push
+        uses: docker/build-push-action@v5
+        with:
+          context: .
+          push: true
+          tags: |
+            ${{ env.IMAGE_NAME }}:${{ github.sha }}
+            ${{ env.IMAGE_NAME }}:latest # Fixed closing brace here
+
+  notifications:
+    name: Pipeline Notifications
+    needs: [validate-and-scan, release-to-production]
+    if: always() # Runs even if previous jobs fail
+    runs-on: ubuntu-latest
+    steps:
+      - name: Send Success Email
+        if: |
+          (github.ref == 'refs/heads/test' && needs.validate-and-scan.result == 'success') ||
+          (github.ref == 'refs/heads/main' && needs.release-to-production.result == 'success')
+        uses: dawidd6/action-send-mail@v3
+        with:
+          server_address: smtp.gmail.com
+          server_port: 465
+          username: ${{ secrets.MAIL_USERNAME }}
+          password: ${{ secrets.MAIL_PASSWORD }}
+          subject: "✅ Pipeline Success: ${{ github.repository }}"
+          to: ${{ secrets.DEVELOPMENT_TEAM_EMAIL }}
+          from: GitHub Actions CI
+          body: |
+            The pipeline for ${{ github.repository }} on branch ${{ github.ref_name }} finished successfully.
+            
+            View Run: https://github.com/${{ github.repository }}/actions/runs/${{ github.run_id }}
+
+      - name: Send Failure Email
+        if: |
+          needs.validate-and-scan.result == 'failure' || 
+          needs.release-to-production.result == 'failure'
+        uses: dawidd6/action-send-mail@v3
+        with:
+          server_address: smtp.gmail.com
+          server_port: 465
+          username: ${{ secrets.MAIL_USERNAME }}
+          password: ${{ secrets.MAIL_PASSWORD }}
+          subject: "❌ Pipeline FAILED: ${{ github.repository }}"
+          to: ${{ secrets.DEVELOPMENT_TEAM_EMAIL }}
+          from: GitHub Actions CI
+          body: |
+            ⚠️ Pipeline Failure Alert
+            
+            Branch: ${{ github.ref_name }}
+            Event: ${{ github.event_name }}
+            
+            The workflow failed during the execution. Please review the logs to identify if the failure occurred during Snyk scanning, SonarQube Quality Gates, or the Docker build process.
+            
+            Logs: https://github.com/${{ github.repository }}/actions/runs/${{ github.run_id }}
